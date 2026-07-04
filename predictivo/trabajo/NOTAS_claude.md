@@ -27,7 +27,7 @@ La planta cuenta con 24 inversores idénticos (~30 kW de capacidad cada uno). Ca
   - **`ac_power` (Kilowatts - kW):** La potencia real útil inyectada a la red. **Esta es la variable objetivo (Target)** para el modelado predictivo.
 
 **3. Calidad y Anomalías (Requisitos de Limpieza):**
-- **El Apagón de Datos:** Existen 1,728 filas (6 días continuos) donde las lecturas de los 24 inversores son nulas (NaN). Esto indica un fallo de comunicación del SCADA, no de la planta eléctrica.
+- **El Apagón de Datos:** Existen 1,728 filas (6 días continuos) donde las lecturas de los 24 inversores son nulas (NaN). Esto indica un fallo de comunicación del SCADA, no de la planta eléctrica. **[CORREGIDO 2026-07-04]** La auditoría de la sección 12 ubicó este apagón **al final del dataset (2023-11-02 a 2023-11-07)** — dentro de la ventana natural de test — y encontró además ~44 días con falsos ceros en rachas (2018-11, 2022-02/03, 2022-06) que el resample diario produce sobre huecos de adquisición.
 - **Sensores con Alucinaciones (Outliers):** Los inversores 04 y 07 sufren de fallas esporádicas en sus sensores, registrando valores físicamente imposibles (trillones de voltios). Deben ser filtrados estadísticamente, ya que su capacidad real es idéntica al resto.
 
 ---
@@ -173,7 +173,8 @@ de planta + features ciclicos temporales (seccion 9 del notebook).
 
 **Modelos Competidores:**
 1. **Regresion Lineal Multiple (RLM):** sobre datos escalados (StandardScaler), interpretable via coeficientes.
-2. **Random Forest Regressor:** 300 arboles, sin escalado, interpretable via importancias.
+2. **Random Forest Regressor:** ajustado con GridSearchCV + TimeSeriesSplit (3 folds, CV temporal).
+   Mejor config: max_depth=20, min_samples_leaf=1, n_estimators=100 (RMSE validacion ~83 kWh).
 
 **Desempeño en Test (431 dias):**
 
@@ -181,13 +182,13 @@ de planta + features ciclicos temporales (seccion 9 del notebook).
 |---|---|---|---|
 | Baseline (media del train) | 1481.4 | 1230.9 | -0.013 |
 | Regresion Lineal Multiple | 73.7 | 57.4 | 0.9975 |
-| Random Forest | 71.3 | 55.0 | 0.9977 |
+| Random Forest (ajustado) | 71.9 | 55.6 | 0.9976 |
 
 **Hallazgos:**
 - Ambos modelos reducen el RMSE del baseline en ~95%. Error relativo < 2% (media diaria ~3,966 kWh).
 - **Empate tecnico con leve ventaja de Random Forest.** La relacion fisica es casi lineal
   (Energia ~ Corriente x Voltaje), por eso la RLM compite de igual a igual.
-- Coeficientes RLM e importancias RF coinciden: `planta_ac_current` domina (importancia 94.6% en RF;
+- Coeficientes RLM e importancias RF coinciden: `planta_ac_current` domina (importancia ~94.9% en RF;
   coeficiente escalado 1472.8 kWh en RLM). Fisicamente coherente: voltaje de red casi constante (~280 V)
   -> potencia proporcional a corriente.
 - **Limitacion documentada:** las predictoras son mediciones del mismo dia (nowcasting/diagnostico).
@@ -210,3 +211,86 @@ Se ejecutó un análisis de clustering/detección de anomalías en los datos de 
 
 **Conclusión:**
 **Ganador: Isolation Forest.** Es el modelo ideal para la monitorización industrial en este proyecto, proporcionando "alarmas de mantenimiento" realistas sin saturar el sistema (falsos positivos controlados al 1%) y siendo capaz de procesar años de datos históricos en segundos.
+
+---
+
+## RESULTADOS: FORECASTING (PRONOSTICO DE ENERGIA DIARIA)
+
+[DERIVADO] Seccion 12 del notebook. Pronostico real: predecir la energia de los proximos dias usando
+solo el pasado de la serie (a diferencia del supervisado, que usaba mediciones del mismo dia).
+
+**AUDITORIA CRITICA DE DATOS [DERIVADO - alta confianza]:**
+- El "apagon SCADA de 6 dias" NO esta en medio del dataset: **esta al FINAL (2023-11-02 a 2023-11-07)**,
+  con lecturas basura de 0-342 kWh (mediana normal ~4,094). Es decir, caia DENTRO de la ventana de
+  test de ambos equipos (ultimos 60 o 90 dias). Cualquier evaluacion que incluya esos dias esta
+  contaminada y favorece artificialmente a la persistencia (se adapta en 1 dia a los valores basura).
+- Ademas hay **44 dias con falsos ceros** en rachas dentro del train (2018-10-31 a 11-07,
+  2022-02-19 a 03-06, 2022-06-08 a 06-16, y sueltos en 2017-12/2018-03/2021-01): son huecos de
+  adquisicion donde el resample diario produce suma 0, no dias sin sol.
+- Tratamiento aplicado: truncar la serie en 2023-11-01 (ultimo dia limpio) + falsos ceros -> NaN ->
+  interpolacion temporal. Los dias bajos pero >0 se conservan (pueden ser tormentas reales).
+
+**Setup (serie limpia):**
+- Serie: `energia_diaria` (kWh/dia), 2,192 dias (2017-11-01 a 2023-11-01), 44 ceros imputados.
+- Split cronologico: train = 2,132 dias, test = ultimos 60 dias (2023-09-03 a 2023-11-01).
+- ADF confirmo estacionariedad (p ~1.6e-05) -> d=0, sin diferenciacion.
+- Estacionalidad dominante: anual (no hay semanal; el sol no descansa domingos).
+
+**Modelos Competidores (escalera completa del docente, eda_tsa.ipynb):**
+1. **Persistencia** (baseline): energia de manana = energia de hoy.
+2. **SES (1er orden):** suavizado exponencial simple, solo nivel.
+3. **Holt (2do orden):** nivel + tendencia amortiguada.
+4. **Holt-Winters (3er orden):** trend aditivo amortiguado + estacionalidad aditiva anual (365).
+5. **SARIMAX + Fourier:** ARMA(2,0,2) elegido por AIC + pares seno/coseno anuales como exogenas.
+6. **Prophet:** modelo aditivo default con bandas de confianza 80% (estilo del docente).
+7. **LSTM en NumPy:** clase del docente (hidden=32, lr=0.005), ventana 30 dias, pronostico recursivo.
+
+**Desempeño en Test limpio (60 dias), ordenado por RMSE:**
+
+| Modelo | RMSE (kWh) | MAE (kWh) | R2 |
+|---|---|---|---|
+| **SARIMAX(2,0,2) + Fourier** | **1013.6** | 865.6 | 0.01 |
+| SES (1er orden) | 1025.7 | 757.7 | -0.01 |
+| Holt (2do orden) | 1025.8 | 757.8 | -0.01 |
+| Prophet | 1031.5 | **700.2** | -0.02 |
+| Holt-Winters (3er orden, anual) | 1211.4 | 957.3 | -0.41 |
+| Persistencia (manana = hoy) | 1253.3 | 670.5 | -0.51 |
+| LSTM NumPy (ventana 30) | 1682.2 | 1600.6 | -1.72 |
+
+**Hallazgos:**
+- **La limpieza invirtio el ranking: con el test contaminado "ganaba" la persistencia (RMSE 1328);
+  con el test limpio gana SARIMAX+Fourier (1014) y Prophet casi empata (1031), ~19% mejor que
+  la persistencia (1253).** La "victoria de la persistencia" reportada antes (por nosotros Y por el
+  otro equipo con su ventana de 90 dias) era un artefacto de la cola corrupta dentro del test.
+- La persistencia conserva el mejor MAE (670): el dia tipico se parece a ayer. Pero paga las
+  transiciones de clima con errores enormes (por eso su RMSE es 24% peor que SARIMAX). Para un
+  operador de red la metrica relevante es RMSE -> **modelo recomendado: SARIMAX+Fourier**.
+- El techo meteorologico persiste (todos los R2 ~0 en el test limpio): sin datos de irradiancia
+  externa nadie predice la nubosidad de manana. Pero la estacionalidad anual SI aporta valor real.
+- LSTM univariada colapsa con pronostico recursivo a 60 pasos (ultima con RMSE 1682).
+- **Pronostico a futuro ciego (12.8, estandar del docente):** Prophet y SARIMAX reajustados con la
+  serie limpia proyectan ~2,775-2,824 kWh/dia para invierno 2023-2024 (media historica: 3,814),
+  fisicamente coherente. Grafico con bandas de confianza 80% de Prophet.
+- Prophet requirio `pip install prophet` en el Python del kernel (Python311 del sistema) + workaround
+  `tbb.dll` de Windows (mismo que usa el docente en eda_tsa.ipynb celda 14).
+- Explicacion fisica, no fallo de modelado: la variabilidad dia a dia esta dominada por la **nubosidad**,
+  que no existe dentro de la serie historica. Los modelos univariados solo capturan el ciclo anual
+  (el "techo" de generacion), no el clima de manana.
+- MAE de persistencia = 711 kWh (~18% de la media diaria ~3,966 kWh) = incertidumbre meteorologica pura.
+- Contraste clave para el reporte: supervisado R2 ~0.998 (explicar el presente) vs forecasting R2 ~0.23
+  (predecir el futuro). Ilustra la diferencia entre *explicar* y *pronosticar*.
+- Trabajo futuro: integrar pronostico meteorologico (irradiancia/nubosidad) como variable exogena.
+
+---
+
+## EVALUACION CONSOLIDADA (SECCION 13 DEL NOTEBOOK)
+
+| Tarea | Ganador | Metrica clave | Pregunta de negocio |
+|---|---|---|---|
+| Supervisado | Random Forest (empate con RLM) | RMSE ~71 kWh, R2 ~0.998 | ¿Cuanto deberia generar hoy? (diagnostico) |
+| No supervisado | Isolation Forest 1% | 407 anomalias interpretables | ¿Que registros son sospechosos? (mantenimiento) |
+| Forecasting (escalera de 7, test limpio) | SARIMAX+Fourier (Prophet cerca; persistencia mejor MAE) | RMSE ~1014, MAE ~866 kWh | ¿Cuanto generara manana? (operacion de red) |
+
+Notebook completo: secciones 12 (Forecasting con escalera del docente: persistencia/SES/Holt/HW/
+SARIMAX/Prophet/LSTM + futuro ciego), 13 (Evaluacion consolidada), 14 (Discusion) y 15 (Conclusiones)
+agregadas y ejecutadas sin errores el 2026-07-04.

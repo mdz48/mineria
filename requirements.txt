@@ -1,1 +1,3 @@
 git+https://github.com/Ian747-tw/Antigravity-Jupiter-Notebook-MCP.git
+git+https://github.com/ghostiee-11/overleaf-mcp.git
+overleaf-sync

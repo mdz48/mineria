@@ -4,3 +4,8 @@ assets/
 skills-lock
 .venv
 data
+reportes_latex
+deprecated
+.olauth
+docs
+figuras

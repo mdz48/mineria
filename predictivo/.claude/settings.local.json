@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(c:/Universidad/mineria/.venv/Scripts/python.exe -c ' *)",
+      "mcp__antigravity-nb__open_notebook",
+      "mcp__antigravity-nb__list_cells"
+    ]
+  }
+}
