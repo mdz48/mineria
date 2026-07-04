@@ -1,0 +1,6 @@
+assets/
+.vscode
+.agents
+skills-lock
+.venv
+data

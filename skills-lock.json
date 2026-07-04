@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "data-analyst": {
+      "source": "shubhamsaboo/awesome-llm-apps",
+      "sourceType": "github",
+      "skillPath": "awesome_agent_skills/data-analyst/SKILL.md",
+      "computedHash": "b927391093b9e04f091c9c04da47096e2217deb7acaccbfbc9690261626085b6"
+    },
+    "data-science-expert": {
+      "source": "personamanagmentlayer/pcl",
+      "sourceType": "github",
+      "skillPath": "stdlib/ai/data-science-expert/SKILL.md",
+      "computedHash": "ed0d18c5a582b54ea46462c80c2d06d77dd7daeeb1b69ca12f17588c38b14645"
+    }
+  }
+}
